@@ -1,0 +1,468 @@
+/************************************************************************************************* 
+                MONITORAMENTO DE MANUTENÇÃO PREVENTIVA E RASTREABILIDADE DE
+                               COMPONENTESCOM MICROCONTROLADOR
+  AUTOR: JEAN CARLOS DALLA ROSA
+  TRABALHO DE CONCLUSÃO DE CURSO 2022
+  ENGENHARIA ELÉTRICA URI - ERECHIM
+**********************************************************************************************/
+                                         
+/***********************************************************************************************
+                                   INCLUSÃO DE BIBLIOTECAS
+***********************************************************************************************/
+#include <OneWire.h>     // BIBLIOTECA PROTOCOLO ONE WIRE  
+#include <DallasTemperature.h>// BIBLIOTECA PARA SENSOR DS18B20
+#include <LiquidCrystal_I2C.h> // BIBLIOTECA DISPLAY LCD COM COMUNICAÇÃO I2C
+#include <Wire.h> // BIBLIOTECA UTILIZADA PARA COMUNICAÇÃO COM SENSOR ACS712 
+#include "EmonLib.h" // INCLUI BIBLIOTECA DE LEITURA DE CORRENTE
+#include <EEPROM.h> // INCLUI BIBLIOTECA DE MEMÓRIA EEPROM
+#include <WiFi.h> // INCLUI BIBLIOTECA DE COMUNICAÇÃO WIFI
+#include "FS.h" // BIBLIOTECA PARA GRAVAR DADOS NA SDCARD
+#include "SD.h" // BIBLIOTECA SD CARD
+#include <SPI.h> // BIBLIOTECA DE PROTOCOLO SPI
+#include <HTTPClient.h> // BIBLIOTECA PARA REQUISIÇÃO VIA WIFI
+#include <MySQL_Generic.h> // BIBLIOTECA PARA BANCO DE DADOS
+*********************************************************************************************/
+
+/***********************************************************************************************
+                                            DEFINIÇÕES
+***********************************************************************************************/
+#define MYSQL_DEBUG_PORT    Serial // DEFINE PORTA MYSQL COMO SERIAL
+#define MYSQL_LOGLEVEL    1 // DEFINE NÍVEL 1 DE LOGIN
+#define CS  5         // DEFINE O PINO GPIO5 COMO CHIPSET DO MÓDULO SDCARD
+
+hw_timer_t  *timer = NULL; // DEFINIÇÃO PARA INTERRUPÇÃO TIMER
+
+//WIFI
+IPAddress server(XXX, XXX, X, XXX); // ENDEREÇO DE IP DO BANCO DE DADOS
+char user[]         = "XXXXX";        // NOME DA TABELA DO BANCO DE DADOS
+char password[]     = "XXXXXXXXXX";     // SENHA PARA ACESSAR A TABELA
+const char* ssid = "XXXXXXXXXXXXXXXXXXXXXX"; // DEFINIÇÃO DA REDE WIFI
+const char* passwordwifi = "XXXXXXXXX";         // SENHA DA REDE WIFI
+MySQL_Connection conn((Client *)&client);  // CONEXÃO COM O BANCO DE DADOS
+MySQL_Query *query_mem;                   // REQUISITA INFORMAÇÕES BANCO DE DADOS
+
+//ACS712 - SENSOR DE CORRENTE 
+#define   calib  3.33  // VARIÁVEL DE CALIBRAÇÃO DO SENSOR DE CORRENTE 
+EnergyMonitor amp; // DEFINE amp COMO LEITURA DE CORRENTE 
+double corrente = 0; // VARIÁVEL PARA LEITURA CORRENTE 
+
+int prod;             // VARIÁVEL PARA LEITURA DE PRODUÇÃO 
+String grav;          // VÁRIAVEL PARA GRAVAÇÃO DE DADOS SDCARD
+
+// LEITURA DE TEMPERATURA
+int temp = 4;         // PINO GPIO4 COMO ENTRADA DE SINAL DS18B20
+float temperatura;    // VARIÁVEL PARA LEITURA DE TEMPERATURA
+int rele_motor = 32;  // PINO GPIO32 COMO SAÍDA PARA O MÓDULO RELÉ DO MOTOR
+
+// HORÍMETRO
+int segundos = 0;      //VÁRIAVEL PARA CONTAGEM DE SEGUNDOS
+int minutos = 0;        //VÁRIAVEL PARA CONTAGEM DE MINUTOS
+int horas = 0;          //VÁRIAVEL PARA CONTAGEM DE HORAS
+int man80 = 0;          //CONTAGEM DE MANUTENÇÃO 80 HORAS
+int man250 = 0;         //CONTAGEM DE MANUTENÇÃO 250 HORAS
+int man1000 = 0;        //CONTAGEM DE MANUTENÇÃO 1000 HORAS
+int pecas1000 = 0;       //CONTAGEM DE MANUTENÇÃO PARA COMPRA DE PEÇAS 1000HS
+
+// IHM
+int button1;           // VARIÁVEL BOTÃO 1
+int button2;           // VARIÁVEL BOTÃO 2
+int button3;           // VARIÁVEL BOTÃO 3
+int mensagem;          // VARIÁVEL MENSAGEM
+
+LiquidCrystal_I2C lcd(0x27, 16, 2); // DEFINE DISPLAY COMO LCD 16 COLUNAS POR 2 LINHAS
+OneWire oneWire (temp);             // DEFINE temp COMO COMUNICAÇÃO ONE WIRE
+DallasTemperature sensor (&oneWire);// DEFINE sensor COMO data DO SENSOR DS18B20
+
+// INTERRUPÇÃO TIMER
+void IRAM_ATTR ISR_Timer(){ 
+prod = digitalRead(15);       // DEFINE prod COMO LEITURA DIGITAL DO GPI015
+corrente = amp.calcIrms(1996);   // DEFINE corrente COMO LEITURA DE CORRENTE 
+              
+if ((prod == HIGH) || (corrente >0.7)){ // SE LEITURA FOR NÍVEL ALTO E CORRENTE MAIOR QUE 0,7A   
+sendcorrente(); // CHAMA O TRATAMENTO sendcorrente();
+segundos++;     // INICIA CONTAGEM DE SEGUNDOS
+
+if (segundos > 59){  // QUANDO CHEGAR EM 59 SEGUNDOS
+      segundos = 0;   // ZERA O CONTADOR DE SEGUNDO
+      minutos++;  }    // INICIA A CONTAGEM DE MINUTOS
+      
+if (minutos>59) { // QUANDO CHEGAR EM 59 MINUTOS 
+      minutos = 0; // ZERA O CONTADOR DE MINUTOS
+      horas++;      // INICIA A CONTAGEM DE HORAS
+      man80++;      // INICIA A CONTAGEM DE MANUTENÇÃO 80 HORAS
+      man250++;     // INICIA A CONTAGEM DE MANUTENÇÃO 250 HORAS
+      man1000++; }}}   // INICIA A CONTAGEM DE MANUTENÇÃO 1000 HORAS
+      
+// TRATAMENTOS DE TRANSMISSÃO AO BANCO DDE DADOS 
+void man80horas(){ // MANUTENÇÃO 80 HORAS
+MySQL_Query query_mem = MySQL_Query(&conn); // CONECTA AO BANCO DE DADOS
+if (conn.connected()){    // SE ESTIVER CONECTADO
+String sql_query = "insert into sigme.esp(valor) values('80horas' );"; }} 
+// INSERE NO CAMINHO sigme.esp A MENSAGEM 80horas
+
+void man250horas(){// MANUTENÇÃO 250 HORAS
+MySQL_Query query_mem = MySQL_Query(&conn);// CONECTA AO BANCO DE DADOS
+if (conn.connected()){ // SE ESTIVER CONECTADO
+String sql_query = "insert into sigme.esp(valor) values('250horas' );"; }}
+// INSERE NO CAMINHO sigme.esp A MENSAGEM 250horas  
+    
+void pecas1000hs(){ //AVISO DE COMPRA DE PEÇAS
+MySQL_Query query_mem = MySQL_Query(&conn); // CONECTA AO BANCO DE DADOS
+if (conn.connected()){
+String sql_query = "insert into sigme.esp(valor) values('verificarpecas' );";}}
+// INSERE NO CAMINHO sigme.esp A MENSAGEM verificarpecas
+
+void man1000horas(){ // MANUTENÇÃO 1000 HORAS 
+MySQL_Query query_mem = MySQL_Query(&conn);// CONECTA AO BANCO DE DADOS
+if (conn.connected()){// SE ESTIVER CONECTADO
+String sql_query = "insert into sigme.esp(valor) values('1000horas' );";}}
+// INSERE NO CAMINHO sigme.esp A MENSAGEM 1000horas    
+
+void avisocontato(){ // AVISO DE VERIFICAÇÃO DE CONTATO
+MySQL_Query query_mem = MySQL_Query(&conn);// CONECTA AO BANCO DE DADOS
+if (conn.connected()){// SE ESTIVER CONECTADO
+String sql_query = "insert into sigme.esp(valor) values('verificarcontato' );";}}
+// INSERE NO CAMINHO sigme.esp A MENSAGEM verificarcontato  
+
+void avisomotor(){ // AVISO DE VERIFICAÇÃO DE MOTOR
+MySQL_Query query_mem = MySQL_Query(&conn);// CONECTA AO BANCO DE DADOS
+if (conn.connected()){// SE ESTIVER CONECTADO
+String sql_query = "insert into sigme.esp(valor) values('verificarmotor' );";}}
+// INSERE NO CAMINHO sigme.esp A MENSAGEM verificarmotor
+
+void avisotemp1(){ // AVISO DE VERIFICAÇÃO DE SENSOR
+MySQL_Query query_mem = MySQL_Query(&conn);// CONECTA AO BANCO DE DADOS
+if (conn.connected()){// SE ESTIVER CONECTADO
+String sql_query = "insert into sigme.esp(valor) values('verificarsensor' );";}}
+// INSERE NO CAMINHO sigme.esp A MENSAGEM verificarsensor
+
+void avisotemp2(){// AVISO DE ALERTA DE TEMPERATURA
+MySQL_Query query_mem = MySQL_Query(&conn);// CONECTA AO BANCO DE DADOS
+  if (conn.connected()){// SE ESTIVER CONECTADO
+String sql_query = "insert into sigme.esp(valor) values('temp40' );";}}
+// INSERE NO CAMINHO sigme.esp A MENSAGEM temp40
+
+void avisotemp3(){ // AVISO DE TEMPERATURA ALTA
+MySQL_Query query_mem = MySQL_Query(&conn);// CONECTA AO BANCO DE DADOS
+if (conn.connected()){// SE ESTIVER CONECTADO
+String sql_query = "insert into sigme.esp(valor) values('temp80' );";}}
+// INSERE NO CAMINHO sigme.esp A MENSAGEM temp80  
+
+void sendtemp(){ // ENVIO DE LEITURA DE TEMPERATURA
+MySQL_Query query_mem = MySQL_Query(&conn);// CONECTA AO BANCO DE DADOS
+if (conn.connected()){// SE ESTIVER CONECTADO
+delay(500000);      // AGUARDA 5 MINUTOS
+String temperature = temperatura; // TRANSFORMA LEITURA DIGITAL DE TEMPERATURA EM CARACTER
+String sql_query = "insert into sigme.esp(valor) values(temperature);";
+delay(500000);}}      // AGUARDA 5 MINUTOS
+// INSERE NO CAMINHO sigme.esp O VALOR LIDO PELA TEMPERATURA
+
+void sendcorrente(){ // ENVIO DE LEITURA DE CORRENTE
+MySQL_Query query_mem = MySQL_Query(&conn);// CONECTA AO BANCO DE DADOS
+if (conn.connected()){// SE ESTIVER CONECTADO
+delay(500000);      // AGUARDA 5 MINUTOS
+String current = corrente; //TRANSFORMA LEITURA DIGITAL DE CORRENTE EM CARACTER
+String sql_query = "insert into sigme.esp(valor) values(current);";
+delay(500000);}}        // AGUARDA 5 MINUTOS
+// INSERE NO CAMINHO sigme.esp O VALOR LIDO PELA CORRENTE
+  
+/*********************************************************************************************
+                                     CONFIGURAÇÕES INICIAIS
+***********************************************************************************************/
+void setup() {
+  
+WiFi.mode(WIFI_STA);                // INICIA A COMUNICAÇÃO WIFI
+WiFi.begin(ssid, passwordwifi);      // CONECTA A REDE
+if (WiFi.waitForConnectResult() != WL_CONNECTED) { // SE NÃO CONECTAR
+lcd.clear();                          // LIMPA DISPLAY
+lcd.setCursor(0,0);                  // COMEÇA A ESCREVER NA COLUNA 1 DA PRIMEIRA LINHA
+lcd.print("FALHA DE WIFI");           // ESCREVE NO DISPLAY: FALHA DE WIFI
+delay(5000);                          
+return;}                           // RETORNA MPARA INICIALIZAÇÃO
+  
+pinMode (15, INPUT);              // DEFINE GPIO15 COMO ENTRADA
+pinMode(rele_motor,OUTPUT);       // DEFINE RELÉ DO MOTOR COMO SAÍDA
+pinMode(button1, INPUT);          // DEFINE BOTÃO 1 COMO ENTRADA
+pinMode(button2, INPUT);          // DEFINE BOTÃO 2 COMO ENTRADA
+pinMode(button3, INPUT);          // DEFINE BOTÃO 3 COMO ENTRADA          
+digitalWrite(rele_motor, HIGH);   // DEFINE RELÉ MOTOR DESLIGADO
+
+amp.current(34, calib);         // DEFINE LEITURA DE CORRENTE COMO GPIO34
+
+lcd.init();                       // INICIALIZA DISPLAY
+               
+sensor.begin();                   // INICIALIZA SENSOR DS18B20
+EEPROM.begin(512);                // INICIALIZA MEMÓRIA EEPROM 512 BYTES
+horas = EEPROM.read(0);           // DEFINE LEITURA DE HORAS COMO LEITURA DA MEMÓRIA 0
+minutos = EEPROM.read(1);        // DEFINE LEITURA DE CONTADOR COMO LEITURA DA MEMÓRIA 1
+mensagem = EEPROM.read(2);       // DEFINE LEITURA DE MENSAGEM COMO LEITURA DA MEMÓRIA 2
+// INTERRUPÇÃO TIMER
+timer = timerBegin(0, 80, true);              // CONFIGURA O TIMER
+timerAttachInterrupt(timer , &ISR_Timer, true);   // CHAMA O TRATAMENTO ISR_TIMER
+timerAlarmWrite(timer, 1000000, true);         // CONFIGURA O TIMER
+timerAlarmEnable(timer);                      // ATIVA O TIMER
+  
+//SDcard
+SD.begin();           // INICIALIZA O MÓDULO SDCARD
+if(!SD.begin(CS)) {   // SE NÃO INICIALIZAR
+return;  }            // RETORNA AO INÍCIO
+
+uint8_t cardType = SD.cardType(); //VERIRICA SE HÁ CARTÃO
+if(cardType == CARD_NONE) {       // SE NÃO TIVER
+return;  }                        // RETORNA AO INÍCIO
+
+if (!SD.begin(CS)) {              // SE O CHIPSET NÃO ESTIVER CONECTADO
+return;   }                       // RETORNA AO INÍCIO
+
+File arquivo = SD.open("/maintenance.txt"); // TENTA ABRIR O ARQUIVO maintenance.txt
+if(!arquivo) {                            // SE NÃO EXISTIR    
+escrevearquivo(SD, "/maintenace.txt", "Horímetro atual \r\n");} // CRIA O ARQUIVO E ESCREVE
+arquivo.close();                                  // FECHA O ARQUIVO
+grav = String(horas) + "\r\n";              // TRANSFORMA HORAS EM CARACTER NA VARIÁVEL grav
+acrescentar(SD, "/maintenance.txt", grav.c_str());} // GRAVA AS HORAS NO CARTÃO
+
+
+/*********************************************************************************************/
+
+
+/************************************************************************************************
+                                         CICLO
+***********************************************************************************************/
+void loop() {
+  
+EEPROM.write(1,minutos);      // ESCREVE MINUTOS NA MEMÓRIA 1          
+EEPROM.write(0,horas);        // ESCREVE HORAS NA MEMÓRIA 0
+EEPROM.commit();              // SALVA ESCRITA NA MEMÓRIA 0 E 1
+sensor.requestTemperatures();             // DEFINE SENSOR COMO REFERENCIA DO DS18B20
+temperatura = sensor.getTempCByIndex(0);  // DEFINE TEMPERATURA COMO LEITURA DO DS18B20 
+ihm(); // CHAMA O TRATAMENTO IHM
+sendtemp(); // CHAMA O TRATAMENTO sendtemp() PARA ENVIO AO BANCO DE DADOS
+
+if (conn.connectNonBlocking(server, server_port, user, password) != RESULT_FAIL){
+delay(500); // SE CONEXÃO COM O BANCO DE DADOS NÃO FALHAR, FECHA A CONEXÃO
+conn.close();}
+
+if (temperatura == -127) { // SE A TEMPERATURA FOR IGUAL A -127°C
+lcd.clear();                          // LIMPA DISPLAY
+lcd.setCursor(4, 0);                  // COMEÇA A ESCREVER NA COLUNA 5 DA PRIMEIRA LINHA   
+lcd.print("VERIFICAR");               // ESCREVE NO DISPLAY: CUIDADO
+lcd.setCursor(4, 1);                  // COMEÇA A ESCREVER NA COLUNA 5 DA SEGUNDA LINHA
+lcd.print("SENSOR TEMP");           // ESCREVE NO DISPLAY: TEMP ANORMAL         
+delay(2000);   
+if (conn.connectNonBlocking(server, server_port, user, password) != RESULT_FAIL){
+delay(500); // SE CONEXÃO COM O BANCO DE DADOS NÃO FALHAR, FECHA A CONEXÃO
+avisotemp1(); // CHAMA O TRATAMENTO avisotemp1() PARA ENVIO AO BANCO DE DADO
+conn.close();  }
+mensagem = 1;                         // COLOCA AVISO 1
+EEPROM.write(2, mensagem);            // GRAVA O AVISO NA MEMÓRIA 2
+EEPROM.commit();   }                   // SALVA A ESCRITA DA MEMÓRIA 2     
+
+
+//SE TEMPERATURA FOR MAIOR QUE 40ºC E MENOR QUE 80ºC 
+if ((temperatura >40) && (temperatura <80)) {  
+lcd.clear();                          // LIMPA DISPLAY
+lcd.setCursor(5, 0);                  // COMEÇA A ESCREVER NA COLUNA 6 DA PRIMEIRA LINHA   
+lcd.print("CUIDADO");                 // ESCREVE NO DISPLAY: CUIDADO
+lcd.setCursor(2, 1);                  // COMEÇA A ESCREVER NA COLUNA 3 DA SEGUNDA LINHA
+lcd.print("TEMP ANORMAL");           // ESCREVE NO DISPLAY: TEMP ANORMAL         
+delay(2000);   
+digitalWrite(rele_motor, HIGH);       // MANTÉM RELÉ DESLIGADO E MOTOR LIGADO
+mensagem = 2;                         // COLOCA AVISO 2
+EEPROM.write(2, mensagem);            // GRAVA O AVISO NA MEMÓRIA 2
+EEPROM.commit();                      // SALVA A ESCRITA DA MEMÓRIA 2
+delay(10000);                          // PERMANECE LIGADO POR 10s
+if (conn.connectNonBlocking(server, server_port, user, password) != RESULT_FAIL){
+delay(500);
+avisotemp2();// CHAMA O TRATAMENTO avisotemp2() PARA ENVIO AO BANCO DE DADO
+conn.close();  }   }
+
+ if (temperatura > 80) { //SE TEMPERATURA FOR MAIOR 80ºC 
+lcd.clear();                    // LIMPA DISPLAY
+lcd.setCursor(0, 0);            // COMEÇA A ESCREVER NA COLUNA 1 DA PRIMEIRA LINHA
+lcd.print("TEMPERATURA ALTA");  // ESCREVE NO DISPLAY: TEMPERATURA ALTA
+lcd.setCursor(0, 1);            // COMEÇA A ESCREVER NA COLUNA 1 DA SEGUNDA LINHA
+lcd.print("EM DESLIGAMENTO");   // ESCREVE NO DISPLAY: EM DESLIGAMENTO  
+delay(10000);                    // PERMANECE LIGADO POR 10s
+digitalWrite(rele_motor, LOW);  // LIGA RELÉ E DESLIGA MOTOR 
+mensagem = 3;                   // COLOCA AVISO 3
+EEPROM.write(2, mensagem);     // GRAVA O AVISO NA MEMÓRIA 2
+EEPROM.commit();              // SALVA A ESCRITA DA MEMÓRIA 2
+if (conn.connectNonBlocking(server, server_port, user, password) != RESULT_FAIL){
+    delay(500);
+    avisotemp3();// CHAMA O TRATAMENTO avisotemp3() PARA ENVIO AO BANCO DE DADO
+    conn.close();  }   }
+
+/*********************************************************************************************
+                                        CONTAGEM  
+***********************************************************************************************/
+// MANUTENÇÃO 80HS   
+if (man80 == 80) {            // SE man80 CHEGAR A 80HS
+man80 = 0;                       // ZERA CONTAGEM DE MANUTENÇÃO 80HS
+lcd.clear();                     // LIMPA DISPLAY
+lcd.setCursor(2, 0);             // COMEÇA A ESCREVER NA COLUNA 3 DA PRIMEIRA LINHA
+lcd.print("MANUTENCAO");         // ESCREVE MANUTENCAO
+lcd.setCursor(0, 1);             // COMEÇA A ESCREVER NA COLUNA 1 DA SEGUNDA LINHA
+lcd.print("80hs");               // ESCREVE 80hs
+delay(2000);  
+mensagem = 4;                    // COLOCA AVISO 4
+if (conn.connectNonBlocking(server, server_port, user, password) != RESULT_FAIL){
+delay(500);
+man80horas();// CHAMA O TRATAMENTO man80horas() PARA ENVIO AO BANCO DE DADOS
+conn.close();   } 
+EEPROM.write(2, mensagem);       // ESCREVE O AVISO NA MEMÓRIA 2    
+EEPROM.commit();     }            // SALVA ESCRITA NA MEMÓRIA 2
+
+
+// MANUTENÇÃO 250HS
+if (man250 == 250) {            // SE man250 CHEGAR A 250HS 
+man250 = 0;                     // ZERA CONTAGEM DE MANUTENÇÃO 250HS
+lcd.clear();                    // LIMPA DISPLAY
+lcd.setCursor(2, 0);            // COMEÇA A ESCREVER NA COLUNA 3 DA PRIMEIRA LINHA
+lcd.print("MANUTENCAO");        // ESCREVE MANUTENCAO
+lcd.setCursor(6, 1);            // COMEÇA A ESCREVER NA COLUNA 7 DA SEGUNDA LINHA
+lcd.print("250hs");             // ESCREVE 250hs
+delay(2000); 
+mensagem = 5;                    // COLOCA AVISO 5
+if (conn.connectNonBlocking(server, server_port, user, password) != RESULT_FAIL){
+delay(500);
+man250horas(); // CHAMA O TRATAMENTO man250horas() PARA ENVIO AO BANCO DE DADOS
+conn.close();   }   
+EEPROM.write(2, mensagem);      // ESCREVE O AVISO NA MEMÓRIA 2 
+EEPROM.commit();            }    // SALVA ESCRITA NA MEMÓRIA 2
+
+// AVISO DE COMPRA DE PEÇAS PARA MANUTENÇÃO 1000HS
+pecas1000 == 0.8 * man1000; //80% DE VIDA ÚTIL
+if (pecas1000 == 800){ // QUANDO CHEGAR A 80%
+if (conn.connectNonBlocking(server, server_port, user, password) != RESULT_FAIL){
+delay(500);
+pecas1000hs();// CHAMA O TRATAMENTO PARA ENVIO AO BANCO DE DADOS
+conn.close();} 
+mensagem = 6;         // COLOCA AVISO 6
+EEPROM.write(2, mensagem);  // ESCREVE O AVISO NA MEMÓRIA 2
+EEPROM.commit();}           // SALVA ESCRITA NA MEMÓRIA 2
+
+      
+// MANUTENÇÃO 1000HS   
+if (man1000 == 5) {          // SE man1000 CHEGAR A 1000HS
+man1000 = 0;                    // ZERA CONTAGEM DE MANUTENÇÃO 1000HS
+lcd.clear();                    // LIMPA DISPLAY
+lcd.setCursor(2, 0);            // COMEÇA A ESCREVER NA COLUNA 3 DA PRIMEIRA LINHA
+lcd.print("MANUTENCAO");        // ESCREVE MANUTENCAO
+lcd.setCursor(10, 1);           // COMEÇA A ESCREVER NA COLUNA 11 DA SEGUNDA LINHA
+lcd.print("1000hs");            // ESCREVE 1000hs
+mensagem = 7;                   // COLOCA AVISO 7
+if (conn.connectNonBlocking(server, server_port, user, password) != RESULT_FAIL){
+delay(500);
+man1000horas(); // CHAMA O TRATAMENTO man1000horas() PARA ENVIO AO BANCO DE DADOS
+conn.close(); }
+EEPROM.write(2, mensagem);      // ESCREVE O AVISO NA MEMÓRIA 2 
+EEPROM.commit();    }            // SALVA ESCRITA NA MEMÓRIA 2
+
+// VERIFICAÇÕES
+if ((prod == HIGH) && (corrente < 0.7)){ 
+// SE LEITURA DE PRODUÇÃO FOR ALTA E CORRENTE MENOR QUE 0.7A
+lcd.clear();                     // LIMPA DISPLAY
+lcd.setCursor(0, 0);             // COMEÇA A ESCREVER NA COLUNA 1 DA PRIMEIRA LINHA
+lcd.print("VERIFICAR MOTOR");     // ESCREVE VERIFICAR MOTOR
+delay(5000);
+if (conn.connectNonBlocking(server, server_port, user, password) != RESULT_FAIL){
+delay(500);
+avisomotor();// CHAMA O TRATAMENTO PARA ENVIO AO BANCO DE DADOS
+conn.close();}
+mensagem = 8;                         // COLOCA AVISO 1
+EEPROM.write(2, mensagem);            // GRAVA O AVISO NA MEMÓRIA 2
+EEPROM.commit();   }                   // SALVA A ESCRITA DA MEMÓRIA 2
+
+
+if ((prod == LOW) && (corrente > 0.7))  {
+// SE LEITURA DE PRODUÇÃO FOR BAIXA E CORRENTE MAIOR QUE 0.7A  
+lcd.clear();                  // LIMPA DISPLAY
+lcd.setCursor(6, 0);             // COMEÇA A ESCREVER NA COLUNA 7 DA PRIMEIRA LINHA
+lcd.print("VERIFICAR");      // ESCREVE VERIFICAR
+lcd.setCursor(8, 1);             // COMEÇA A ESCREVER NA COLUNA 9 DA PRIMEIRA LINHA
+lcd.print("CONTATO");       // ESCREVE CONTATO
+delay(5000);
+if (conn.connectNonBlocking(server, server_port, user, password) != RESULT_FAIL){
+delay(500);
+avisocontato();// CHAMA O TRATAMENTO avisocontato() PARA ENVIO AO BANCO DE DADOS
+conn.close(); } 
+mensagem = 9;                         // COLOCA AVISO *
+EEPROM.write(2, mensagem);            // GRAVA O AVISO NA MEMÓRIA 2
+EEPROM.commit();            }    }      // SALVA A ESCRITA DA MEMÓRIA 2
+
+/**********************************************************************************************
+                                           IHM 
+***********************************************************************************************/
+void ihm() {
+lcd.clear();                       // LIMPA DISPLAY
+lcd.setCursor(2, 0);             // COMEÇA A ESCREVER NA COLUNA 2 DA PRIMEIRA LINHA
+lcd.print("MAINTENANCE");    // ESCREVE DOBRADEIRA
+lcd.setCursor(4, 1);              // COMEÇA A ESCREVER NA COLUNA 2 DA PRIMEIRA LINHA
+lcd.print("CONTROL");     // ESCREVE MONOSTAR BINDER  
+
+button1 = digitalRead(12);       // DEFINE BOTÃO 1 COMO LEITURA DIGITAL DO GPIO12
+button2 = digitalRead(13);       // DEFINE BOTÃO 2 COMO LEITURA DIGITAL DO GPIO13
+button3 = digitalRead(14);       // DEFINE BOTÃO 2 COMO LEITURA DIGITAL DO GPIO14*/
+
+
+
+// TELA DE HORÍMETRO
+if (button1 == HIGH) {           // SE BOTÃO 1 FOR ACIONADO
+lcd.backlight();              // LIGA LUZ DE FUNDO DO DISPLAY
+lcd.clear();              // LIMPA DISPLAY
+lcd.setCursor(0, 0);             // COMEÇA A ESCREVER NA COLUNA 1 DA PRIMEIRA LINHA
+lcd.print("HORIMETRO TOTAL");     // ESCREVE HORÍMETRO TOTAL
+lcd.setCursor(0, 1);             // COMEÇA A ESCREVER NA COLUNA 1 DA SEGUNDA LINHA
+lcd.print(horas); }               // MOSTRA O HORÍMETRO TOTAL}
+
+// TELA DE AVISO   
+if (button2 == HIGH) {           // SE BOTÃO 2 FOR ACIONADO
+EEPROM.read(2);                  // LÊ A MEMÓRIA 2
+lcd.backlight();              // LIGA LUZ DE FUNDO DO DISPLAY
+lcd.clear();                // LIMPA DISPLAY
+lcd.setCursor(6, 0);             // COMEÇA A ESCREVER NA COLUNA 7 DA PRIMEIRA LINHA
+lcd.print("AVISO");              // ESCREVE AVISO
+lcd.setCursor(0, 1);             // COMEÇA A ESCREVER NA COLUNA 1 DA SEGUNDA LINHA
+lcd.print(mensagem);    }         // MOSTRA O ÚLTIMO AVISO
+
+
+// TELA DE TEMPERATURA
+if (button3 == HIGH) {           // SE BOTÃO 3 FOR ACIONADO
+lcd.backlight();          // LIGA LUZ DE FUNDO DO DISPLAY
+lcd.clear();                    // LIMPA DISPLAY
+lcd.setCursor(0, 0);             // COMEÇA A ESCREVER NA COLUNA 1 DA PRIMEIRA LINHA
+lcd.print("I:");        // ESCREVE TEMPERATURA
+lcd.setCursor(0, 1);             // COMEÇA A ESCREVER NA COLUNA 1 DA SEGUNDA LINHA 
+lcd.print(corrente);          // MOSTRA TEMPERATURA.
+lcd.setCursor(4, 1);             // COMEÇA A ESCREVER NA COLUNA 5 DA SEGUNDA LINHA 
+lcd.print("A");          // MOSTRA TEMPERATURA.
+lcd.setCursor(9, 0);             // COMEÇA A ESCREVER NA COLUNA 8 DA PRIMEIRA LINHA
+lcd.print("TEMP:");        // ESCREVE TEMPERATURA
+lcd.setCursor(9, 1);             // COMEÇA A ESCREVER NA COLUNA 10 DA SEGUNDA LINHA 
+lcd.print(temperatura);          // MOSTRA 
+lcd.setCursor(14, 1);             // COMEÇA A ESCREVER NA COLUNA 15 DA SEGUNDA LINHA 
+lcd.write(B11011111);            // COLOCA SIMBOLO DE GRAU
+lcd.setCursor(15, 1);            // COMEÇA A ESCREVER NA COLUNA 16 DA SEGUNDA LINHA
+lcd.print("C");    }              // ESCREVE C
+
+
+// RESET DE AVISO
+if ((button2 == HIGH) && (button3 == HIGH)) { // SE BOTÃO 1 E BOTÃO 2 FOREM ACIONADOS
+mensagem = 0;                     // ESCREVE 0 NA MENSAGEM
+EEPROM.write(2, mensagem);        // ESCREVE AVISO NA MEMÓRIA 2
+EEPROM.commit();                  // SALVA ESCRITA NA MEMÓRIA 2
+} }
+
+//SDCard
+void escrevearquivo(fs::FS &fs, const char * path, const char * message) {
+File arquivo = fs.open(path, FILE_WRITE); // ESCREVE ARQUIVO
+if(!arquivo) {                          // SE FALHAR
+return;}                                // RETORNA AO INÍCIO
+arquivo.close();}                       // FECHA ARQUIVO
+
+void acrescentar(fs::FS &fs, const char * path, const char * message) {
+File arquivo = fs.open(path, FILE_APPEND); // ACRESCENTA NO ARQUIVO
+if(!arquivo) {            // SE FALHAR
+return;  }                // RETORNA AO INÍCIO
+arquivo.close();}         // FECHA ARQUIVO
+************************************************************************************************/
